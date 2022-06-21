@@ -1,0 +1,21 @@
+Original work for:
+
+void nk_kinc_init(void);
+void nk_kinc_shutdown(void);
+void nk_kinc_input(void);
+
+void nk_kinc_render(void);
+void nk_kinc_device_create(void);
+void nk_kinc_device_destroy(void);
+void nk_kinc_font_stash_end(void);
+
+static kinc_g4_texture_t nk_kinc_create_texture(const void* image, int width, int height);
+static void nk_kinc_device_upload_atlas(const void* image, int width, int height);
+static void nk_internal_kinc_render(enum nk_anti_aliasing AA);
+
+nuklear.frag.glsl
+nuklear.vert.glsl
+
+Done by lucasbrg.
+
+Licenced as zlib. Source: https://github.com/lucasbrg/nuklear-kinc
