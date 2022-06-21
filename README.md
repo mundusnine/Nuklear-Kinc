@@ -1,7 +1,11 @@
-# Kinc Nuklear Sample
+# Kinc Nuklear
 
-A sample implementation of [Nuklear](https://github.com/Immediate-Mode-UI/Nuklear) using [Kinc](https://github.com/Kode/Kinc) G4 api.
+Nuklear implementation.
 
-## License
+Add to your Kinc project:
+```
+await project.addProject('Libraries/Nuklear-Kinc');
+project.addIncludeDir('Libraries/Nuklear-Kinc/Sources');
+```
 
-[zlib](https://choosealicense.com/licenses/zlib/)
+Nuklear-Kinc considers Kinc to be at the root of your project. It also considers itself to be inside the Libraries folder.
