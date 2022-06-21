@@ -1,9 +1,9 @@
 const project = new Project('Nuklear');
 
-project.addFile('sources/**');
-project.addFile('shaders/**');
-project.addIncludeDir('sources');
+await project.addProject('../../Kinc');
+
+project.addFile('Sources/**');
+project.addFile('Shaders/**');
 project.setDebugDir('Deployment');
-project.flatten();
 
 resolve(project);

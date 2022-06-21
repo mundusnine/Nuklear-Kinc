@@ -1,23 +1,13 @@
-#include <kinc/graphics4/graphics.h>
-#include <kinc/graphics4/indexbuffer.h>
-#include <kinc/graphics4/pipeline.h>
-#include <kinc/graphics4/shader.h>
-#include <kinc/graphics4/texture.h>
-#include <kinc/graphics4/vertexbuffer.h>
-#include <kinc/graphics4/vertexstructure.h>
-#include <kinc/input/keyboard.h>
-#include <kinc/input/mouse.h>
+#include "nuklear_impl_g4.h"
+
+#include <kinc/system.h>
+#include <kinc/window.h>
 #include <kinc/io/filereader.h>
 #include <kinc/log.h>
 #include <kinc/math/matrix.h>
 #include <kinc/math/vector.h>
-#include <kinc/system.h>
-#include <kinc/window.h>
 
-/* Demo */
-#include <stdint.h>
-#include <stdio.h>
-#include <time.h>
+#include "nuklear_impl_kinc.h"
 
 #define NK_INCLUDE_FIXED_TYPES
 #define NK_INCLUDE_STANDARD_IO
@@ -30,15 +20,14 @@
 #define NK_IMPLEMENTATION
 #include "nuklear.h"
 
-struct nk_kinc_vertex {
-	float pos[2];
-	float uv[2];
-	uint8_t color[4];
-};
+#include <assert.h>
+
 
 struct nk_kinc_device {
 	struct nk_buffer cmds;
 	struct nk_draw_null_texture null;
+	struct nk_context ctx;
+	struct nk_font_atlas atlas;
 	kinc_g4_pipeline_t pipeline;
 	kinc_g4_vertex_structure_t vert_strut;
 	kinc_g4_vertex_buffer_t buffer_vertex;
@@ -55,28 +44,36 @@ struct nk_kinc_device {
 	int max_index_buffer;
 };
 
-#define NK_KINC_TEXT_MAX 256
-static struct nk_kinc {
-	struct nk_kinc_device dev;
-	float width, height;
-	struct nk_context ctx;
-	struct nk_font_atlas atlas;
-	unsigned int text[NK_KINC_TEXT_MAX];
-	uint8_t keyboard_key_state[255];
-	uint8_t mouse_btn_state[16];
-	int mouse_scroll;
-	int text_len;
-} g_kinc = {0};
 
-static void nk_kinc_device_create() {
-	struct nk_kinc_device *dev = &g_kinc.dev;
+
+
+typedef struct nk_kinc_vertex_t {
+	float pos[2];
+	float uv[2];
+	uint8_t color[4];
+}nk_kinc_vertex_t;
+
+void nk_kinc_device_create(void) {
+	nk_kinc_device_t* dev = malloc(sizeof(nk_kinc_device_t));
+	assert(dev != NULL);
+
+	g_kinc.dev = dev;
+	g_kinc.ctx = &dev->ctx;
+	g_kinc.atlas = &dev->atlas;
+
+	nk_init_default(g_kinc.ctx, 0);
+	g_kinc.ctx->clip.userdata = nk_handle_ptr(0);
+
+	dev->max_vertex_buffer = 512 * 1024;
+	dev->max_index_buffer = 512 * 1024 * 3;
+
 	nk_buffer_init_default(&dev->cmds);
 	kinc_g4_pipeline_init(&dev->pipeline);
 	{
 		kinc_file_reader_t reader;
 		kinc_file_reader_open(&reader, "nuklear.vert", KINC_FILE_TYPE_ASSET);
 		size_t size = kinc_file_reader_size(&reader);
-		uint8_t *data = malloc(size);
+		uint8_t* data = malloc(size);
 		kinc_file_reader_read(&reader, data, size);
 		kinc_file_reader_close(&reader);
 		kinc_g4_shader_init(&dev->vert_shdr, data, size, KINC_G4_SHADER_TYPE_VERTEX);
@@ -87,7 +84,7 @@ static void nk_kinc_device_create() {
 		kinc_file_reader_t reader;
 		kinc_file_reader_open(&reader, "nuklear.frag", KINC_FILE_TYPE_ASSET);
 		size_t size = kinc_file_reader_size(&reader);
-		uint8_t *data = malloc(size);
+		uint8_t* data = malloc(size);
 		kinc_file_reader_read(&reader, data, size);
 		kinc_file_reader_close(&reader);
 		kinc_g4_shader_init(&dev->frag_shdr, data, size, KINC_G4_SHADER_TYPE_FRAGMENT);
@@ -112,14 +109,18 @@ static void nk_kinc_device_create() {
 
 	kinc_g4_vertex_buffer_init(&dev->buffer_vertex, dev->max_vertex_buffer, &dev->vert_strut, KINC_G4_USAGE_DYNAMIC, 0);
 	kinc_g4_index_buffer_init(&dev->buffer_index, dev->max_index_buffer, KINC_G4_INDEX_BUFFER_FORMAT_16BIT, KINC_G4_USAGE_STATIC);
+
+	nk_font_atlas_init_default(g_kinc.atlas);
+	nk_font_atlas_begin(g_kinc.atlas);
+	nk_kinc_font_stash_end();
 }
 
-static kinc_g4_texture_t nk_kinc_create_texture(const void *image, int width, int height) {
+static kinc_g4_texture_t nk_kinc_create_texture(const void* image, int width, int height) {
 	kinc_g4_texture_t texture;
-	const unsigned char *pixels = image;
+	const unsigned char* pixels = image;
 
 	kinc_g4_texture_init(&texture, width, height, KINC_IMAGE_FORMAT_RGBA32);
-	unsigned char *tex = kinc_g4_texture_lock(&texture);
+	unsigned char* tex = kinc_g4_texture_lock(&texture);
 	int stride = kinc_g4_texture_stride(&texture);
 	for (int y = 0; y < height; ++y) {
 		memcpy(&tex[y * stride], &pixels[y * width * 4], width * 4);
@@ -129,15 +130,16 @@ static kinc_g4_texture_t nk_kinc_create_texture(const void *image, int width, in
 	return texture;
 }
 
-static void nk_kinc_device_upload_atlas(const void *image, int width, int height) {
-	struct nk_kinc_device *dev = &g_kinc.dev;
+static void nk_kinc_device_upload_atlas(const void* image, int width, int height) {
+	nk_kinc_device_t* dev = g_kinc.dev;
 	dev->font_tex = nk_kinc_create_texture(image, width, height);
 }
 
-static void nk_kinc_device_destroy(void) {}
+void nk_kinc_device_destroy(void) {
+}
 
-static void nk_kinc_render(enum nk_anti_aliasing AA) {
-	struct nk_kinc_device *dev = &g_kinc.dev;
+static void nk_internal_kinc_render(enum nk_anti_aliasing AA) {
+	nk_kinc_device_t* dev = g_kinc.dev;
 	struct nk_buffer vbuf, ibuf;
 
 	g_kinc.width = kinc_window_width(0);
@@ -172,23 +174,23 @@ static void nk_kinc_render(enum nk_anti_aliasing AA) {
 
 	kinc_g4_viewport(0, 0, (int)g_kinc.width, (int)g_kinc.height);
 
-	const struct nk_draw_command *cmd;
-	void *vertices, *indexes;
+	const struct nk_draw_command* cmd;
+	void* vertices, * indexes;
 	int index_offset = 0;
 
 	vertices = kinc_g4_vertex_buffer_lock_all(&dev->buffer_vertex);
 	indexes = kinc_g4_index_buffer_lock(&dev->buffer_index);
 	{
 		struct nk_convert_config config;
-		static const struct nk_draw_vertex_layout_element vertex_layout[] = {{NK_VERTEX_POSITION, NK_FORMAT_FLOAT, NK_OFFSETOF(struct nk_kinc_vertex, pos)},
-		                                                                     {NK_VERTEX_TEXCOORD, NK_FORMAT_FLOAT, NK_OFFSETOF(struct nk_kinc_vertex, uv)},
-		                                                                     {NK_VERTEX_COLOR, NK_FORMAT_R8G8B8A8, NK_OFFSETOF(struct nk_kinc_vertex, color)},
-		                                                                     {NK_VERTEX_LAYOUT_END}};
+		static const struct nk_draw_vertex_layout_element vertex_layout[] = { {NK_VERTEX_POSITION, NK_FORMAT_FLOAT, NK_OFFSETOF(nk_kinc_vertex_t, pos)},
+																			 {NK_VERTEX_TEXCOORD, NK_FORMAT_FLOAT, NK_OFFSETOF(nk_kinc_vertex_t, uv)},
+																			 {NK_VERTEX_COLOR, NK_FORMAT_R8G8B8A8, NK_OFFSETOF(nk_kinc_vertex_t, color)},
+																			 {NK_VERTEX_LAYOUT_END} };
 
 		memset(&config, 0, sizeof(config));
 		config.vertex_layout = vertex_layout;
-		config.vertex_size = sizeof(struct nk_kinc_vertex);
-		config.vertex_alignment = NK_ALIGNOF(struct nk_kinc_vertex);
+		config.vertex_size = sizeof(nk_kinc_vertex_t);
+		config.vertex_alignment = NK_ALIGNOF(nk_kinc_vertex_t);
 		config.null = dev->null;
 		config.circle_segment_count = 22;
 		config.curve_segment_count = 22;
@@ -199,7 +201,7 @@ static void nk_kinc_render(enum nk_anti_aliasing AA) {
 
 		nk_buffer_init_fixed(&vbuf, vertices, (nk_size)dev->max_vertex_buffer);
 		nk_buffer_init_fixed(&ibuf, indexes, (nk_size)dev->max_index_buffer);
-		nk_convert(&g_kinc.ctx, &dev->cmds, &vbuf, &ibuf, &config);
+		nk_convert(g_kinc.ctx, &dev->cmds, &vbuf, &ibuf, &config);
 	}
 	const bool vertex_buffer_overflow = nk_buffer_total(&vbuf) > dev->max_vertex_buffer;
 	const bool index_buffer_overflow = nk_buffer_total(&ibuf) > dev->max_index_buffer;
@@ -208,14 +210,14 @@ static void nk_kinc_render(enum nk_anti_aliasing AA) {
 	kinc_g4_vertex_buffer_unlock_all(&dev->buffer_vertex);
 	kinc_g4_index_buffer_unlock(&dev->buffer_index);
 
-	nk_draw_foreach(cmd, &g_kinc.ctx, &dev->cmds) {
+	nk_draw_foreach(cmd, g_kinc.ctx, &dev->cmds) {
 		if (!cmd->elem_count) continue;
 
-		kinc_vector2_t clip_off = {0};
+		kinc_vector2_t clip_off = { 0 };
 		kinc_g4_scissor((int)(cmd->clip_rect.x - clip_off.x), (int)(cmd->clip_rect.y - clip_off.y), (int)(cmd->clip_rect.w - clip_off.x),
-		                (int)(cmd->clip_rect.h - clip_off.y));
+			(int)(cmd->clip_rect.h - clip_off.y));
 
-		kinc_g4_texture_t *texture = cmd->texture.ptr;
+		kinc_g4_texture_t* texture = cmd->texture.ptr;
 		kinc_g4_set_pipeline(&dev->pipeline);
 		kinc_g4_set_matrix4(dev->uniform_proj, &mvp);
 		kinc_g4_set_vertex_buffer(&dev->buffer_vertex);
@@ -226,136 +228,33 @@ static void nk_kinc_render(enum nk_anti_aliasing AA) {
 		index_offset += (int)cmd->elem_count;
 	}
 
-	nk_clear(&g_kinc.ctx);
+	nk_clear(g_kinc.ctx);
 	nk_buffer_clear(&dev->cmds);
 }
 
-static void nk_kinc_font_stash_end(void) {
-	const void *image;
+void nk_kinc_font_stash_end(void) {
+	const void* image;
 	int w, h;
-	image = nk_font_atlas_bake(&g_kinc.atlas, &w, &h, NK_FONT_ATLAS_RGBA32);
+	image = nk_font_atlas_bake(g_kinc.atlas, &w, &h, NK_FONT_ATLAS_RGBA32);
 	nk_kinc_device_upload_atlas(image, w, h);
-	nk_font_atlas_end(&g_kinc.atlas, nk_handle_ptr(&g_kinc.dev.font_tex), &g_kinc.dev.null);
-	if (g_kinc.atlas.default_font) nk_style_set_font(&g_kinc.ctx, &g_kinc.atlas.default_font->handle);
+	nk_font_atlas_end(g_kinc.atlas, nk_handle_ptr(&g_kinc.dev->font_tex), &g_kinc.dev->null);
+	if (g_kinc.atlas->default_font) nk_style_set_font(g_kinc.ctx, &g_kinc.atlas->default_font->handle);
 }
 
-static struct nk_context *nk_kinc_init() {
-	nk_init_default(&g_kinc.ctx, 0);
-	g_kinc.ctx.clip.userdata = nk_handle_ptr(0);
-
-	struct nk_kinc_device *dev = &g_kinc.dev;
-	dev->max_vertex_buffer = 512 * 1024;
-	dev->max_index_buffer = 512 * 1024 * 3;
-	nk_kinc_device_create();
-
-	nk_font_atlas_init_default(&g_kinc.atlas);
-	nk_font_atlas_begin(&g_kinc.atlas);
-	nk_kinc_font_stash_end();
-
-	return &g_kinc.ctx;
-}
-
-static void nk_kinc_shutdown(void) {
-	nk_font_atlas_clear(&g_kinc.atlas);
-	nk_free(&g_kinc.ctx);
-	nk_kinc_device_destroy();
-	memset(&g_kinc, 0, sizeof(g_kinc));
-}
-
-void key_down_callback(int key_code) {
-	g_kinc.keyboard_key_state[key_code] = 1;
-}
-void key_up_callback(int key_code) {
-	g_kinc.keyboard_key_state[key_code] = 0;
-}
-
-void mouse_btn_down(int windw, int btn, int x, int y) {
-	g_kinc.mouse_btn_state[btn] = 1;
-}
-void mouse_btn_up(int windw, int btn, int x, int y) {
-	g_kinc.mouse_btn_state[btn] = 0;
-}
-
-void mouse_scroll(int window, int delta) {
-	g_kinc.mouse_scroll = delta;
-}
-
-int is_keyboard_pressed(int key_code) {
-	return g_kinc.keyboard_key_state[key_code];
-}
-
-void input() {
-	struct nk_context *ctx = &g_kinc.ctx;
-	nk_input_begin(ctx);
-
-	/* mouse */
-	{
-		int mouse_x, mouse_y;
-		kinc_mouse_get_position(0, &mouse_x, &mouse_y);
-		nk_input_motion(ctx, mouse_x, mouse_y);
-		nk_input_scroll(ctx, (struct nk_vec2){0.0f, (float)g_kinc.mouse_scroll});
-
-		nk_input_button(ctx, NK_BUTTON_LEFT, mouse_x, mouse_y, g_kinc.mouse_btn_state[0]);
-		nk_input_button(ctx, NK_BUTTON_RIGHT, mouse_x, mouse_y, g_kinc.mouse_btn_state[1]);
-		nk_input_button(ctx, NK_BUTTON_MIDDLE, mouse_x, mouse_y, g_kinc.mouse_btn_state[2]);
-	}
-
-	/* keyboard */
-	{
-		nk_input_key(ctx, NK_KEY_DEL, is_keyboard_pressed(KINC_KEY_DELETE));
-		nk_input_key(ctx, NK_KEY_ENTER, is_keyboard_pressed(KINC_KEY_RETURN));
-		nk_input_key(ctx, NK_KEY_TAB, is_keyboard_pressed(KINC_KEY_TAB));
-		nk_input_key(ctx, NK_KEY_BACKSPACE, is_keyboard_pressed(KINC_KEY_BACKSPACE));
-		nk_input_key(ctx, NK_KEY_UP, is_keyboard_pressed(KINC_KEY_UP));
-		nk_input_key(ctx, NK_KEY_DOWN, is_keyboard_pressed(KINC_KEY_DOWN));
-		nk_input_key(ctx, NK_KEY_TEXT_START, is_keyboard_pressed(KINC_KEY_HOME));
-		nk_input_key(ctx, NK_KEY_TEXT_END, is_keyboard_pressed(KINC_KEY_END));
-		nk_input_key(ctx, NK_KEY_SCROLL_START, is_keyboard_pressed(KINC_KEY_HOME));
-		nk_input_key(ctx, NK_KEY_SCROLL_END, is_keyboard_pressed(KINC_KEY_END));
-		nk_input_key(ctx, NK_KEY_SCROLL_DOWN, is_keyboard_pressed(KINC_KEY_PAGE_DOWN));
-		nk_input_key(ctx, NK_KEY_SCROLL_UP, is_keyboard_pressed(KINC_KEY_PAGE_UP));
-		nk_input_key(ctx, NK_KEY_SHIFT, is_keyboard_pressed(KINC_KEY_SHIFT));
-
-		if (is_keyboard_pressed(KINC_KEY_CONTROL)) {
-			nk_input_key(ctx, NK_KEY_COPY, is_keyboard_pressed(KINC_KEY_C));
-			nk_input_key(ctx, NK_KEY_PASTE, is_keyboard_pressed(KINC_KEY_V));
-			nk_input_key(ctx, NK_KEY_CUT, is_keyboard_pressed(KINC_KEY_X));
-			nk_input_key(ctx, NK_KEY_TEXT_UNDO, is_keyboard_pressed(KINC_KEY_Z));
-			nk_input_key(ctx, NK_KEY_TEXT_REDO, is_keyboard_pressed(KINC_KEY_R));
-			nk_input_key(ctx, NK_KEY_TEXT_WORD_LEFT, is_keyboard_pressed(KINC_KEY_LEFT));
-			nk_input_key(ctx, NK_KEY_TEXT_WORD_RIGHT, is_keyboard_pressed(KINC_KEY_RIGHT));
-			nk_input_key(ctx, NK_KEY_TEXT_LINE_START, is_keyboard_pressed(KINC_KEY_B));
-			nk_input_key(ctx, NK_KEY_TEXT_LINE_END, is_keyboard_pressed(KINC_KEY_E));
-			nk_input_key(ctx, NK_KEY_TEXT_SELECT_ALL, is_keyboard_pressed(KINC_KEY_A));
-		}
-		else {
-			nk_input_key(ctx, NK_KEY_LEFT, is_keyboard_pressed(KINC_KEY_LEFT));
-			nk_input_key(ctx, NK_KEY_RIGHT, is_keyboard_pressed(KINC_KEY_RIGHT));
-			nk_input_key(ctx, NK_KEY_COPY, 0);
-			nk_input_key(ctx, NK_KEY_PASTE, 0);
-			nk_input_key(ctx, NK_KEY_CUT, 0);
-			nk_input_key(ctx, NK_KEY_SHIFT, 0);
-		}
-	}
-	nk_input_end(ctx);
-}
-
-void render() {
+void nk_kinc_render(void) {
 	g_kinc.width = kinc_window_width(0);
 	g_kinc.height = kinc_window_height(0);
 
-	kinc_g4_begin(0);
-	kinc_g4_clear(KINC_G4_CLEAR_COLOR, 0, 0.0f, 0);
-
-	nk_kinc_render(NK_ANTI_ALIASING_ON);
-
-	kinc_g4_end(0);
-	kinc_g4_swap_buffers();
+	nk_internal_kinc_render(NK_ANTI_ALIASING_ON);
 }
 
+#ifdef NK_DEMO
 /* Nuklear Demo */
+#include <stdint.h>
+#include <stdio.h>
+#include <time.h>
 void nuklear_demo_ui(void) {
-	struct nk_context *ctx = &g_kinc.ctx;
+	struct nk_context* ctx = g_kinc.ctx;
 
 	/* window flags */
 	static int show_menu = nk_true;
@@ -452,7 +351,7 @@ void nuklear_demo_ui(void) {
 				state = (menu_state == MENU_CHART) ? NK_MAXIMIZED : NK_MINIMIZED;
 				if (nk_tree_state_push(ctx, NK_TREE_TAB, "CHART", &state)) {
 					size_t i = 0;
-					const float values[] = {26.0f, 13.0f, 30.0f, 15.0f, 25.0f, 10.0f, 20.0f, 40.0f, 12.0f, 8.0f, 22.0f, 28.0f};
+					const float values[] = { 26.0f, 13.0f, 30.0f, 15.0f, 25.0f, 10.0f, 20.0f, 40.0f, 12.0f, 8.0f, 22.0f, 28.0f };
 					menu_state = MENU_CHART;
 					nk_layout_row_dynamic(ctx, 150, 1);
 					nk_chart_begin(ctx, NK_CHART_COLUMN, NK_LEN(values), 0, 50);
@@ -474,7 +373,7 @@ void nuklear_demo_ui(void) {
 
 		if (show_app_about) {
 			/* about popup */
-			static struct nk_rect s = {20, 100, 300, 190};
+			static struct nk_rect s = { 20, 100, 300, 190 };
 			if (nk_popup_begin(ctx, NK_POPUP_STATIC, "About", NK_WINDOW_CLOSABLE, s)) {
 				nk_layout_row_dynamic(ctx, 20, 1);
 				nk_label(ctx, "Nuklear", NK_TEXT_LEFT);
@@ -516,10 +415,10 @@ void nuklear_demo_ui(void) {
 
 				nk_layout_row_static(ctx, 100, 200, 1);
 				nk_label_wrap(ctx, "This is a very long line to hopefully get this text to "
-				                   "be wrapped into multiple lines to show line wrapping");
+					"be wrapped into multiple lines to show line wrapping");
 				nk_layout_row_dynamic(ctx, 100, 1);
 				nk_label_wrap(ctx, "This is another long text to show dynamic window "
-				                   "changes on multiline text");
+					"changes on multiline text");
 				nk_tree_pop(ctx);
 			}
 
@@ -563,7 +462,7 @@ void nuklear_demo_ui(void) {
 				static int range_int_min = 0;
 				static int range_int_value = 2048;
 				static int range_int_max = 4096;
-				static const float ratio[] = {120, 150};
+				static const float ratio[] = { 120, 150 };
 
 				nk_layout_row_static(ctx, 30, 100, 1);
 				nk_checkbox_label(ctx, "Checkbox", &checkbox);
@@ -631,7 +530,7 @@ void nuklear_demo_ui(void) {
 
 			if (nk_tree_push(ctx, NK_TREE_NODE, "Selectable", NK_MINIMIZED)) {
 				if (nk_tree_push(ctx, NK_TREE_NODE, "List", NK_MINIMIZED)) {
-					static int selected[4] = {nk_false, nk_false, nk_true, nk_false};
+					static int selected[4] = { nk_false, nk_false, nk_true, nk_false };
 					nk_layout_row_static(ctx, 18, 100, 1);
 					nk_selectable_label(ctx, "Selectable", NK_TEXT_LEFT, &selected[0]);
 					nk_selectable_label(ctx, "Selectable", NK_TEXT_LEFT, &selected[1]);
@@ -642,7 +541,7 @@ void nuklear_demo_ui(void) {
 				}
 				if (nk_tree_push(ctx, NK_TREE_NODE, "Grid", NK_MINIMIZED)) {
 					int i;
-					static int selected[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+					static int selected[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
 					nk_layout_row_static(ctx, 50, 50, 4);
 					for (i = 0; i < 16; ++i) {
 						if (nk_selectable_label(ctx, "Z", NK_TEXT_CENTERED, &selected[i])) {
@@ -690,10 +589,10 @@ void nuklear_demo_ui(void) {
 				static int current_weapon = 0;
 				static int check_values[5];
 				static float position[3];
-				static struct nk_color combo_color = {130, 50, 50, 255};
-				static struct nk_colorf combo_color2 = {0.509f, 0.705f, 0.2f, 1.0f};
+				static struct nk_color combo_color = { 130, 50, 50, 255 };
+				static struct nk_colorf combo_color2 = { 0.509f, 0.705f, 0.2f, 1.0f };
 				static size_t prog_a = 20, prog_b = 40, prog_c = 10, prog_d = 90;
-				static const char *weapons[] = {"Fist", "Pistol", "Shotgun", "Plasma", "BFG"};
+				static const char* weapons[] = { "Fist", "Pistol", "Shotgun", "Plasma", "BFG" };
 
 				char buffer[64];
 				size_t sum = 0;
@@ -704,7 +603,7 @@ void nuklear_demo_ui(void) {
 
 				/* slider color combobox */
 				if (nk_combo_begin_color(ctx, combo_color, nk_vec2(200, 200))) {
-					float ratios[] = {0.15f, 0.85f};
+					float ratios[] = { 0.15f, 0.85f };
 					nk_layout_row(ctx, NK_DYNAMIC, 30, 2, ratios);
 					nk_label(ctx, "R:", NK_TEXT_LEFT);
 					combo_color.r = (nk_byte)nk_slide_int(ctx, 0, combo_color.r, 255, 5);
@@ -785,7 +684,7 @@ void nuklear_demo_ui(void) {
 				sprintf(buffer, "%.1f", chart_selection);
 				if (nk_combo_begin_label(ctx, buffer, nk_vec2(200, 250))) {
 					size_t i = 0;
-					static const float values[] = {26.0f, 13.0f, 30.0f, 15.0f, 25.0f, 10.0f, 20.0f, 40.0f, 12.0f, 8.0f, 22.0f, 28.0f, 5.0f};
+					static const float values[] = { 26.0f, 13.0f, 30.0f, 15.0f, 25.0f, 10.0f, 20.0f, 40.0f, 12.0f, 8.0f, 22.0f, 28.0f, 5.0f };
 					nk_layout_row_dynamic(ctx, 150, 1);
 					nk_chart_begin(ctx, NK_CHART_COLUMN, NK_LEN(values), 0, 50);
 					for (i = 0; i < NK_LEN(values); ++i) {
@@ -807,7 +706,7 @@ void nuklear_demo_ui(void) {
 					if (!time_selected || !date_selected) {
 						/* keep time and date updated if nothing is selected */
 						time_t cur_time = time(0);
-						struct tm *n = localtime(&cur_time);
+						struct tm* n = localtime(&cur_time);
 						if (!time_selected) memcpy(&sel_time, n, sizeof(struct tm));
 						if (!date_selected) memcpy(&sel_date, n, sizeof(struct tm));
 					}
@@ -827,10 +726,10 @@ void nuklear_demo_ui(void) {
 					sprintf(buffer, "%02d-%02d-%02d", sel_date.tm_mday, sel_date.tm_mon + 1, sel_date.tm_year + 1900);
 					if (nk_combo_begin_label(ctx, buffer, nk_vec2(350, 400))) {
 						int i = 0;
-						const char *month[] = {"January", "February", "March",     "April",   "May",      "June",
-						                       "July",    "August",   "September", "October", "November", "December"};
-						const char *week_days[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
-						const int month_days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+						const char* month[] = { "January", "February", "March",     "April",   "May",      "June",
+											   "July",    "August",   "September", "October", "November", "December" };
+						const char* week_days[] = { "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT" };
+						const int month_days[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
 						int year = sel_date.tm_year + 1900;
 						int leap_year = (!(year % 4) && ((year % 100))) || !(year % 400);
 						int days = (sel_date.tm_mon == 1) ? month_days[sel_date.tm_mon] + leap_year : month_days[sel_date.tm_mon];
@@ -893,7 +792,7 @@ void nuklear_demo_ui(void) {
 			}
 
 			if (nk_tree_push(ctx, NK_TREE_NODE, "Input", NK_MINIMIZED)) {
-				static const float ratio[] = {120, 150};
+				static const float ratio[] = { 120, 150 };
 				static char field_buffer[64];
 				static char text[9][64];
 				static int text_len[9];
@@ -1040,10 +939,10 @@ void nuklear_demo_ui(void) {
 		}
 
 		if (nk_tree_push(ctx, NK_TREE_TAB, "Popup", NK_MINIMIZED)) {
-			static struct nk_color color = {255, 0, 0, 255};
+			static struct nk_color color = { 255, 0, 0, 255 };
 			static int select[4];
 			static int popup_active;
-			const struct nk_input *in = &ctx->input;
+			const struct nk_input* in = &ctx->input;
 			struct nk_rect bounds;
 
 			/* menu contextual */
@@ -1094,7 +993,7 @@ void nuklear_demo_ui(void) {
 			nk_layout_row_end(ctx);
 
 			if (popup_active) {
-				static struct nk_rect s = {20, 100, 220, 90};
+				static struct nk_rect s = { 20, 100, 220, 90 };
 				if (nk_popup_begin(ctx, NK_POPUP_STATIC, "Error", 0, s)) {
 					nk_layout_row_dynamic(ctx, 25, 1);
 					nk_label(ctx, "A terrible error as occured", NK_TEXT_LEFT);
@@ -1124,8 +1023,8 @@ void nuklear_demo_ui(void) {
 
 		if (nk_tree_push(ctx, NK_TREE_TAB, "Layout", NK_MINIMIZED)) {
 			if (nk_tree_push(ctx, NK_TREE_NODE, "Widget", NK_MINIMIZED)) {
-				float ratio_two[] = {0.2f, 0.6f, 0.2f};
-				float width_two[] = {100, 200, 50};
+				float ratio_two[] = { 0.2f, 0.6f, 0.2f };
+				float width_two[] = { 100, 200, 50 };
 
 				nk_layout_row_dynamic(ctx, 30, 1);
 				nk_label(ctx, "Dynamic fixed column layout with generated position and size:", NK_TEXT_LEFT);
@@ -1143,9 +1042,9 @@ void nuklear_demo_ui(void) {
 
 				nk_layout_row_dynamic(ctx, 30, 1);
 				nk_label(ctx,
-				         "Dynamic array-based custom column layout with generated "
-				         "position and custom size:",
-				         NK_TEXT_LEFT);
+					"Dynamic array-based custom column layout with generated "
+					"position and custom size:",
+					NK_TEXT_LEFT);
 				nk_layout_row(ctx, NK_DYNAMIC, 30, 3, ratio_two);
 				nk_button_label(ctx, "button");
 				nk_button_label(ctx, "button");
@@ -1153,9 +1052,9 @@ void nuklear_demo_ui(void) {
 
 				nk_layout_row_dynamic(ctx, 30, 1);
 				nk_label(ctx,
-				         "Static array-based custom column layout with generated "
-				         "position and custom size:",
-				         NK_TEXT_LEFT);
+					"Static array-based custom column layout with generated "
+					"position and custom size:",
+					NK_TEXT_LEFT);
 				nk_layout_row(ctx, NK_STATIC, 30, 3, width_two);
 				nk_button_label(ctx, "button");
 				nk_button_label(ctx, "button");
@@ -1163,9 +1062,9 @@ void nuklear_demo_ui(void) {
 
 				nk_layout_row_dynamic(ctx, 30, 1);
 				nk_label(ctx,
-				         "Dynamic immediate mode custom column layout with generated "
-				         "position and custom size:",
-				         NK_TEXT_LEFT);
+					"Dynamic immediate mode custom column layout with generated "
+					"position and custom size:",
+					NK_TEXT_LEFT);
 				nk_layout_row_begin(ctx, NK_DYNAMIC, 30, 3);
 				nk_layout_row_push(ctx, 0.2f);
 				nk_button_label(ctx, "button");
@@ -1177,9 +1076,9 @@ void nuklear_demo_ui(void) {
 
 				nk_layout_row_dynamic(ctx, 30, 1);
 				nk_label(ctx,
-				         "Static immediate mode custom column layout with generated "
-				         "position and custom size:",
-				         NK_TEXT_LEFT);
+					"Static immediate mode custom column layout with generated "
+					"position and custom size:",
+					NK_TEXT_LEFT);
 				nk_layout_row_begin(ctx, NK_STATIC, 30, 3);
 				nk_layout_row_push(ctx, 100);
 				nk_button_label(ctx, "button");
@@ -1286,7 +1185,7 @@ void nuklear_demo_ui(void) {
 				struct nk_rect bounds;
 				float step = (2 * 3.141592654f) / 32;
 				enum chart_type { CHART_LINE, CHART_HISTO, CHART_MIXED };
-				const char *names[] = {"Lines", "Columns", "Mixed"};
+				const char* names[] = { "Lines", "Columns", "Mixed" };
 				float id = 0;
 				int i;
 
@@ -1296,7 +1195,7 @@ void nuklear_demo_ui(void) {
 				nk_layout_row_begin(ctx, NK_STATIC, 20, 3);
 				for (i = 0; i < 3; ++i) {
 					/* make sure button perfectly fits text */
-					const struct nk_user_font *f = ctx->style.font;
+					const struct nk_user_font* f = ctx->style.font;
 					float text_width = f->width(f->userdata, f->height, names[i], nk_strlen(names[i]));
 					float widget_width = text_width + 3 * ctx->style.button.padding.x;
 					nk_layout_row_push(ctx, widget_width);
@@ -1454,7 +1353,7 @@ void nuklear_demo_ui(void) {
 			}
 
 			if (nk_tree_push(ctx, NK_TREE_NODE, "Splitter", NK_MINIMIZED)) {
-				const struct nk_input *in = &ctx->input;
+				const struct nk_input* in = &ctx->input;
 				nk_layout_row_static(ctx, 20, 320, 1);
 				nk_label(ctx, "Use slider and spinner to change tile size", NK_TEXT_LEFT);
 				nk_label(ctx, "Drag the space between tiles to change tile ratio", NK_TEXT_LEFT);
@@ -1500,7 +1399,7 @@ void nuklear_demo_ui(void) {
 					bounds = nk_widget_bounds(ctx);
 					nk_spacing(ctx, 1);
 					if ((nk_input_is_mouse_hovering_rect(in, bounds) || nk_input_is_mouse_prev_hovering_rect(in, bounds)) &&
-					    nk_input_is_mouse_down(in, NK_BUTTON_LEFT)) {
+						nk_input_is_mouse_down(in, NK_BUTTON_LEFT)) {
 						a = row_layout[0] + in->mouse.delta.x;
 						b = row_layout[2] - in->mouse.delta.x;
 					}
@@ -1521,7 +1420,7 @@ void nuklear_demo_ui(void) {
 					bounds = nk_widget_bounds(ctx);
 					nk_spacing(ctx, 1);
 					if ((nk_input_is_mouse_hovering_rect(in, bounds) || nk_input_is_mouse_prev_hovering_rect(in, bounds)) &&
-					    nk_input_is_mouse_down(in, NK_BUTTON_LEFT)) {
+						nk_input_is_mouse_down(in, NK_BUTTON_LEFT)) {
 						b = (row_layout[2] + in->mouse.delta.x);
 						c = (row_layout[4] - in->mouse.delta.x);
 					}
@@ -1574,7 +1473,7 @@ void nuklear_demo_ui(void) {
 					bounds = nk_widget_bounds(ctx);
 					nk_spacing(ctx, 1);
 					if ((nk_input_is_mouse_hovering_rect(in, bounds) || nk_input_is_mouse_prev_hovering_rect(in, bounds)) &&
-					    nk_input_is_mouse_down(in, NK_BUTTON_LEFT)) {
+						nk_input_is_mouse_down(in, NK_BUTTON_LEFT)) {
 						a = a + in->mouse.delta.y;
 						b = b - in->mouse.delta.y;
 					}
@@ -1597,7 +1496,7 @@ void nuklear_demo_ui(void) {
 						nk_layout_row_dynamic(ctx, 8, 1);
 						bounds = nk_widget_bounds(ctx);
 						if ((nk_input_is_mouse_hovering_rect(in, bounds) || nk_input_is_mouse_prev_hovering_rect(in, bounds)) &&
-						    nk_input_is_mouse_down(in, NK_BUTTON_LEFT)) {
+							nk_input_is_mouse_down(in, NK_BUTTON_LEFT)) {
 							b = b + in->mouse.delta.y;
 							c = c - in->mouse.delta.y;
 						}
@@ -1624,30 +1523,4 @@ void nuklear_demo_ui(void) {
 	}
 	nk_end(ctx);
 }
-
-void update(void) {
-	input();
-
-	nuklear_demo_ui();
-
-	render();
-}
-
-int kickstart(int argc, char **argv) {
-	kinc_init("Nuklear", 1024, 768, NULL, NULL);
-	kinc_set_update_callback(update);
-
-	/* input callbacks */
-	kinc_keyboard_set_key_down_callback(&key_down_callback);
-	kinc_keyboard_set_key_up_callback(&key_up_callback);
-	kinc_mouse_set_press_callback(mouse_btn_down);
-	kinc_mouse_set_release_callback(mouse_btn_up);
-	kinc_mouse_set_scroll_callback(mouse_scroll);
-
-	nk_kinc_init();
-
-	kinc_start();
-
-	nk_kinc_shutdown();
-	return 0;
-}
+#endif
