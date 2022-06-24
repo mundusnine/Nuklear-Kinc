@@ -38,17 +38,39 @@ static void keyboard_key_press(unsigned character) {
 	if (is_keyboard_pressed(KINC_KEY_CONTROL))return;
 	g_kinc.text[g_kinc.text_len++] = character;
 }
-void nk_kinc_init() {
+nk_kinputs_t nk_kinc_init(int default_inputs) {
 
 	nk_kinc_device_create();
+	nk_kinputs_t out = {
+		.kb_key_down_callback=0,
+		.kb_key_up_callback=0,
+		.kb_key_press_callback=0,
+		.mws_press_callback=0,
+		.mws_release_callback=0,
+		.mws_scroll_callback=0
+	};
+	if(default_inputs){
+		/* input callbacks */
+		kinc_keyboard_set_key_down_callback(key_down_callback);
+		kinc_keyboard_set_key_up_callback(key_up_callback);
+		kinc_keyboard_set_key_press_callback(keyboard_key_press);
+		kinc_mouse_set_press_callback(mouse_btn_down);
+		kinc_mouse_set_release_callback(mouse_btn_up);
+		kinc_mouse_set_scroll_callback(mouse_scroll);
+		return out;
+	}
+	else {
+		out.kb_key_down_callback = key_down_callback;
+		out.kb_key_up_callback = key_up_callback;
+		out.kb_key_press_callback = keyboard_key_press;
 
-	/* input callbacks */
-	kinc_keyboard_set_key_down_callback(key_down_callback);
-	kinc_keyboard_set_key_up_callback(key_up_callback);
-	kinc_keyboard_set_key_press_callback(keyboard_key_press);
-	kinc_mouse_set_press_callback(mouse_btn_down);
-	kinc_mouse_set_release_callback(mouse_btn_up);
-	kinc_mouse_set_scroll_callback(mouse_scroll);
+		out.mws_press_callback = mouse_btn_down;
+		out.mws_release_callback = mouse_btn_up;
+		out.mws_scroll_callback = mouse_scroll;
+
+		return out;
+	}
+
 }
 
 void nk_kinc_shutdown(void) {
